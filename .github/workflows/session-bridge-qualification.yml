@@ -1,0 +1,204 @@
+name: Session bridge fork qualification
+
+on:
+  push:
+    branches: [ci/session-bridge-qualification]
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    if: github.repository == 'Chukwuemeka001/hermes-agent'
+    name: ${{ matrix.lane }} / ${{ matrix.os }} / ${{ matrix.revision }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {lane: focused, os: ubuntu-latest, revision: candidate, sha: 585e125a589c01622fc2180f5bf0206affd714bf}
+          - {lane: focused, os: macos-latest, revision: candidate, sha: 585e125a589c01622fc2180f5bf0206affd714bf}
+          - {lane: focused, os: windows-latest, revision: candidate, sha: 585e125a589c01622fc2180f5bf0206affd714bf}
+          - {lane: full, os: ubuntu-latest, revision: candidate, sha: 585e125a589c01622fc2180f5bf0206affd714bf}
+          - {lane: full, os: ubuntu-latest, revision: base, sha: 63da2e9c8e262c2ac1500401cfbfeb20a2378bae}
+    env:
+      TEST_SHA: ${{ matrix.sha }}
+      TEST_LANE: ${{ matrix.lane }}
+      TEST_REVISION: ${{ matrix.revision }}
+      PYTHON_VERSION: '3.11.14'
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      NOUS_API_KEY: ''
+    steps:
+      # The control workflow is NOT checked out or executed from the test tree.
+      - name: Check out immutable tested source
+        id: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: Chukwuemeka001/hermes-agent
+          ref: ${{ matrix.sha }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify source and initialize receipt
+        id: verify
+        shell: python {0}
+        run: |
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          evidence = root / 'evidence'
+          evidence.mkdir(exist_ok=True)
+          source = root / 'source'
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
+          hashes = {p: hashlib.sha256((source / p).read_bytes()).hexdigest()
+                    for p in ('pyproject.toml', 'uv.lock', 'scripts/run_tests.sh', 'scripts/run_tests_parallel.py')}
+          test = source / 'tests/gateway/test_session_env_overlap_subprocess.py'
+          test_hash = hashlib.sha256(test.read_bytes()).hexdigest() if test.exists() else None
+          receipt = dict(control_sha=os.environ['GITHUB_SHA'], expected_sha=os.environ['TEST_SHA'],
+                         tested_sha=actual, test_sha256=test_hash, source_hashes=hashes,
+                         platform=os.environ['RUNNER_OS'], lane=os.environ['TEST_LANE'],
+                         revision=os.environ['TEST_REVISION'], python=os.environ['PYTHON_VERSION'])
+          (evidence / 'source-receipt.json').write_text(json.dumps(receipt, indent=2))
+          assert actual == os.environ['TEST_SHA'], 'Unexpected tested commit'
+          if os.environ['TEST_REVISION'] == 'candidate':
+              assert test_hash == '8634ababc373abefda6fb654c339dbe31abcde1c72a00356297fe0c91f4942c6', 'Test hash mismatch'
+
+      - name: Install pinned uv
+        id: uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: '0.9.28'
+          enable-cache: false
+
+      - name: Install pinned Python and locked dependencies
+        id: dependencies
+        shell: python {0}
+        run: |
+          import hashlib, json, os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          commands = [
+              ['uv', 'python', 'install', os.environ['PYTHON_VERSION']],
+              ['uv', 'sync', '--locked', '--python', os.environ['PYTHON_VERSION'],
+               '--extra', 'all', '--extra', 'dev', '--extra', 'anthropic', '--extra', 'mistral',
+               '--extra', 'fal', '--extra', 'modal', '--extra', 'daytona',
+               '--extra', 'hindsight', '--extra', 'parallel-web'],
+              ['uv', 'pip', 'freeze'],
+          ]
+          results = []
+          with (root / 'evidence/setup.log').open('w', encoding='utf-8') as log:
+              for command in commands:
+                  print(command, flush=True)
+                  p = subprocess.Popen(command, cwd=root / 'source', stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+                  for line in p.stdout:
+                      print(line, end='', flush=True)
+                      log.write(line)
+                  rc = p.wait()
+                  results.append(dict(command=command, exit_code=rc))
+                  (root / 'evidence/setup-results.json').write_text(json.dumps(results, indent=2))
+                  if rc:
+                      sys.exit(rc)
+          python = root / ('source/.venv/Scripts/python.exe' if os.name == 'nt' else 'source/.venv/bin/python')
+          query = "import importlib.metadata as m,json; print(json.dumps(sorted((d.metadata['Name'],d.version) for d in m.distributions())))"
+          packages = json.loads(subprocess.check_output([str(python), '-c', query], text=True))
+          encoded = json.dumps(packages, separators=(',', ':')).encode()
+          (root / 'evidence/dependency-manifest.json').write_text(json.dumps(dict(packages=packages, sha256=hashlib.sha256(encoded).hexdigest()), indent=2))
+
+      - name: Run qualification without authored source patches
+        id: tests
+        shell: python {0}
+        run: |
+          import hashlib, json, os, pathlib, subprocess, sys, time
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          source, evidence = root / 'source', root / 'evidence'
+          files = [
+              'tests/gateway/test_session_env_overlap_subprocess.py',
+              'tests/gateway/test_session_env_session_id_bridge.py',
+              'tests/tools/test_local_env_session_leak.py',
+              'tests/gateway/test_session_context_inheritance.py',
+              'tests/gateway/test_session_env.py',
+              'tests/gateway/test_shutdown_executor_quiesce.py',
+          ]
+          # Preserve only OS locations/tool paths; never pass Actions runtime credentials.
+          keep = ('PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA',
+                  'APPDATA', 'SYSTEMROOT', 'TEMP', 'TMP', 'COMSPEC', 'PATHEXT')
+          env = {k: v for k, v in os.environ.items() if k.upper() in keep}
+          env.update(TZ='UTC', LANG='C.UTF-8', LC_ALL='C.UTF-8', PYTHONHASHSEED='0', PYTHONUTF8='1')
+          home = evidence / 'isolated-home'
+          home.mkdir(exist_ok=True)
+          env['HOME'] = str(home)
+          env['HERMES_HOME'] = str(home / '.hermes')
+          commands = []
+          if os.name == 'nt':
+              # CONTRIBUTING.md allows direct pytest; tests-os.yml uses native Python.
+              # Separate processes retain file isolation, but this is NOT the bash wrapper.
+              for index, file in enumerate(files):
+                  commands.append([str(source / '.venv/Scripts/python.exe'), '-m', 'pytest', file,
+                                   '-v', '--tb=short', '--junitxml=' + str(evidence / f'junit-{index}.xml')])
+          else:
+              command = ['bash', 'scripts/run_tests.sh', '-j', '4', '--file-timeout', '120', '--file-retries', '0']
+              if os.environ['TEST_LANE'] == 'focused':
+                  command.extend(files)
+              commands.append(command)
+          results = []
+          failed = False
+          for index, command in enumerate(commands):
+              started = time.monotonic()
+              record = dict(command=command, argv_sha256=hashlib.sha256(json.dumps(command, separators=(',', ':')).encode()).hexdigest(), status='running')
+              results.append(record)
+              report = evidence / 'test-results.json'
+              report.write_text(json.dumps(results, indent=2))
+              with (evidence / f'tests-{index}.log').open('w', encoding='utf-8') as log:
+                  p = subprocess.Popen(command, cwd=source, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+                  for line in p.stdout:
+                      print(line, end='', flush=True)
+                      log.write(line)
+                      log.flush()
+                  rc = p.wait()
+              record.update(status='completed', exit_code=rc, seconds=time.monotonic() - started)
+              report.write_text(json.dumps(results, indent=2))
+              failed |= rc != 0
+          sys.exit(1 if failed else 0)
+
+      - name: Record all step outcomes even on setup failure
+        if: always()
+        shell: python {0}
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+        run: |
+          import json, os, pathlib, shutil, subprocess
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          evidence = root / 'evidence'
+          evidence.mkdir(exist_ok=True)
+          (evidence / 'job-results.json').write_text(json.dumps(dict(
+              expected_sha=os.environ['TEST_SHA'], control_sha=os.environ['GITHUB_SHA'],
+              lane=os.environ['TEST_LANE'], platform=os.environ['RUNNER_OS'],
+              steps=json.loads(os.environ['STEP_RESULTS'])), indent=2))
+          durations = root / 'source/test_durations.json'
+          if durations.exists():
+              shutil.copy2(durations, evidence / 'test_durations.json')
+          # Tracked source must remain exactly the tested revision. Ignored caches are allowed.
+          source = root / 'source'
+          if (source / '.git').exists():
+              head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
+              diff_rc = subprocess.run(['git', 'diff', '--quiet', os.environ['TEST_SHA'], '--'], cwd=source).returncode
+              status = subprocess.check_output(['git', 'status', '--short', '--untracked-files=no'], cwd=source, text=True)
+              (evidence / 'post-source-integrity.json').write_text(json.dumps(dict(head=head, expected_sha=os.environ['TEST_SHA'], tracked_diff_exit=diff_rc, status=status), indent=2))
+              if head != os.environ['TEST_SHA'] or diff_rc != 0:
+                  raise SystemExit('Tracked source changed during qualification')
+          # Do not upload runtime HOME/config; receipts and explicit logs only.
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: session-bridge-${{ matrix.lane }}-${{ matrix.os }}-${{ matrix.sha }}
+          path: |
+            evidence/*.json
+            evidence/*.log
+            evidence/*.xml
+          if-no-files-found: error
+          retention-days: 14
