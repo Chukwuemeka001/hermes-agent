@@ -1,0 +1,292 @@
+name: Webhook 72027 fork qualification
+
+on:
+  push:
+    branches: [ci/webhook-72027-qualification]
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    if: github.repository == 'Chukwuemeka001/hermes-agent'
+    name: ${{ matrix.lane }} / ${{ matrix.os }} / ${{ matrix.revision }} / shard-${{ matrix.shard }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {"lane": "focused", "os": "ubuntu-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 0}
+          - {"lane": "focused", "os": "macos-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 0}
+          - {"lane": "focused", "os": "windows-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 0}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 1}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 2}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 3}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 4}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 5}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 6}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 7}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "candidate", "sha": "53aba7e0a9651dcd525879a3fe055a91115218eb", "shard": 8}
+          - {"lane": "focused", "os": "ubuntu-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 0}
+          - {"lane": "focused", "os": "macos-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 0}
+          - {"lane": "focused", "os": "windows-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 0}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 1}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 2}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 3}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 4}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 5}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 6}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 7}
+          - {"lane": "full", "os": "ubuntu-latest", "revision": "base", "sha": "0fa5f1ea28a12ed755418cd0877490d279a6f0b0", "shard": 8}
+    env:
+      TEST_SHARD: ${{ matrix.shard }}
+      TEST_SHA: ${{ matrix.sha }}
+      TEST_LANE: ${{ matrix.lane }}
+      TEST_REVISION: ${{ matrix.revision }}
+      PYTHON_VERSION: '3.11.14'
+      OPENAI_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+      NOUS_API_KEY: ''
+    steps:
+      # The control workflow is NOT checked out or executed from the test tree.
+      - name: Preserve Git blob line endings
+        id: line_endings
+        shell: python {0}
+        run: |
+          import subprocess
+          subprocess.run(['git', 'config', '--global', 'core.autocrlf', 'false'], check=True)
+
+      - name: Check out immutable tested source
+        id: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: Chukwuemeka001/hermes-agent
+          ref: ${{ matrix.sha }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify source and initialize receipt
+        id: verify
+        shell: python {0}
+        run: |
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          evidence = root / 'evidence'
+          evidence.mkdir(exist_ok=True)
+          source = root / 'source'
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
+          hashes = {p: hashlib.sha256((source / p).read_bytes()).hexdigest()
+                    for p in ('pyproject.toml', 'uv.lock', 'scripts/run_tests.sh', 'scripts/run_tests_parallel.py')}
+          pinned_paths = ('gateway/platforms/webhook.py', 'tests/gateway/test_webhook_session_close.py')
+          pinned = {p: hashlib.sha256((source / p).read_bytes()).hexdigest() for p in pinned_paths}
+          expected = (['323dfdcd0b8a6480e523e559f916ac885e6b81eea489a622811507f57deb0103', '310e01d70c2c78b0d0923cc4e0408528c7a1b15aa11cbc351b374fd342f53b55']
+                      if os.environ['TEST_REVISION'] == 'candidate' else
+                      ['20cc1e84fd679e7667825224b600134f760e3825dee0877af2d665e4ba4ca404',
+                       'a33ea3a298f6d3fd0ce71a4a77f46dbac2e3d2fa633adcf04d3edba4929297e3'])
+          receipt = dict(control_sha=os.environ['GITHUB_SHA'], expected_sha=os.environ['TEST_SHA'],
+                         tested_sha=actual, pinned_hashes=pinned, source_hashes=hashes,
+                         platform=os.environ['RUNNER_OS'], lane=os.environ['TEST_LANE'],
+                         revision=os.environ['TEST_REVISION'], shard=int(os.environ['TEST_SHARD']), python=os.environ['PYTHON_VERSION'])
+          (evidence / 'source-receipt.json').write_text(json.dumps(receipt, indent=2))
+          assert actual == os.environ['TEST_SHA'], 'Unexpected tested commit'
+          assert list(pinned.values()) == expected, 'Pinned code/test hash mismatch'
+
+      - name: Install verified ripgrep prerequisite like upstream CI
+        id: ripgrep
+        if: runner.os == 'Linux'
+        shell: python {0}
+        run: |
+          import hashlib, io, json, os, pathlib, subprocess, tarfile, urllib.request
+          name = 'ripgrep-15.1.0-x86_64-unknown-linux-musl'
+          url = 'https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/' + name + '.tar.gz'
+          expected = '1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599'
+          data = urllib.request.urlopen(url, timeout=60).read(32 * 1024 * 1024)
+          assert hashlib.sha256(data).hexdigest() == expected, 'ripgrep archive checksum mismatch'
+          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'webhook-72027-tools'
+          directory.mkdir(exist_ok=True)
+          with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
+              content = archive.extractfile(name + '/rg').read()
+          binary = directory / 'rg'
+          binary.write_bytes(content)
+          binary.chmod(0o755)
+          version = subprocess.check_output([str(binary), '--version'], text=True)
+          with open(os.environ['GITHUB_PATH'], 'a') as pathfile:
+              pathfile.write(str(directory) + '\n')
+          evidence = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'evidence'
+          (evidence / 'toolchain.json').write_text(json.dumps(dict(ripgrep_url=url, archive_sha256=expected,
+              binary_sha256=hashlib.sha256(content).hexdigest(), version=version), indent=2))
+
+      - name: Install pinned uv
+        id: uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: '0.9.28'
+          enable-cache: false
+
+      - name: Install pinned Python and locked dependencies
+        id: dependencies
+        shell: python {0}
+        run: |
+          import hashlib, json, os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          keep = ('PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA', 'APPDATA', 'SYSTEMROOT', 'TEMP', 'TMP', 'COMSPEC', 'PATHEXT')
+          safe_env = {k: v for k, v in os.environ.items() if k.upper() in keep}
+          safe_env.update(PYTHONUTF8='1')
+          commands = [
+              ['uv', 'python', 'install', os.environ['PYTHON_VERSION']],
+              ['uv', 'sync', '--locked', '--python', os.environ['PYTHON_VERSION'],
+               '--extra', 'all', '--extra', 'dev'],
+              ['uv', 'pip', 'freeze'],
+          ]
+          results = []
+          with (root / 'evidence/setup.log').open('w', encoding='utf-8') as log:
+              for command in commands:
+                  print(command, flush=True)
+                  p = subprocess.Popen(command, cwd=root / 'source', env=safe_env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+                  for line in p.stdout:
+                      print(line, end='', flush=True)
+                      log.write(line)
+                  rc = p.wait()
+                  results.append(dict(command=command, exit_code=rc))
+                  (root / 'evidence/setup-results.json').write_text(json.dumps(results, indent=2))
+                  if rc:
+                      sys.exit(rc)
+          python = root / ('source/.venv/Scripts/python.exe' if os.name == 'nt' else 'source/.venv/bin/python')
+          query = "import importlib.metadata as m,json; print(json.dumps(sorted((d.metadata['Name'],d.version) for d in m.distributions())))"
+          packages = json.loads(subprocess.check_output([str(python), '-c', query], env=safe_env, text=True))
+          encoded = json.dumps(packages, separators=(',', ':')).encode()
+          (root / 'evidence/dependency-manifest.json').write_text(json.dumps(dict(packages=packages, sha256=hashlib.sha256(encoded).hexdigest()), indent=2))
+
+      - name: Run qualification without authored source patches
+        id: tests
+        shell: python {0}
+        run: |
+          import hashlib, json, os, pathlib, subprocess, sys, time
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          source, evidence = root / 'source', root / 'evidence'
+          # Preserve only OS locations/tool paths; never pass Actions runtime credentials.
+          keep = ('PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA',
+                  'APPDATA', 'SYSTEMROOT', 'TEMP', 'TMP', 'COMSPEC', 'PATHEXT')
+          env = {k: v for k, v in os.environ.items() if k.upper() in keep}
+          env.update(TZ='UTC', LANG='C.UTF-8', LC_ALL='C.UTF-8', PYTHONHASHSEED='0', PYTHONUTF8='1')
+          home = evidence / 'isolated-home'
+          home.mkdir(exist_ok=True)
+          env['HOME'] = str(home)
+          env['HERMES_HOME'] = str(home / '.hermes')
+          python = str(source / ('.venv/Scripts/python.exe' if os.name == 'nt' else '.venv/bin/python'))
+          env['HERMES_PYTHON'] = python
+          if os.environ['TEST_LANE'] == 'focused':
+              files = ['tests/gateway/test_webhook_session_close.py', 'tests/test_hermes_state.py', 'tests/gateway/test_session.py', 'tests/gateway/test_session_store_prune.py', 'tests/gateway/test_session_store_stale_prune.py', 'tests/gateway/test_session_store_expiry_finalized.py', 'tests/gateway/test_restart_resume_pending.py', 'tests/gateway/test_restart_drain.py']
+              assert all((source / p).is_file() for p in files), 'Missing focused file'
+              (evidence / 'focused-manifest.json').write_text(json.dumps(dict(files=files), indent=2))
+              if os.name == 'nt':
+                  commands = [[python, '-m', 'pytest', p, '-v', '-p', 'no:cacheprovider',
+                               '--junitxml=' + str(evidence / ('focused-' + str(i) + '.xml'))]
+                              for i, p in enumerate(files)]
+              else:
+                  commands = [['bash', 'scripts/run_tests.sh', '-j', '1', '--file-timeout', '300',
+                               '--file-retries', '0', '--files', ':'.join(files), '-v', '-p', 'no:cacheprovider']]
+          else:
+              generation = subprocess.run([python, 'scripts/run_tests_parallel.py', '--generate-slices', '8'],
+                                          cwd=source, env=env, capture_output=True, text=True)
+              (evidence / 'slice-generation.log').write_text(generation.stderr)
+              (evidence / 'slice-manifest.json').write_text(generation.stdout)
+              generation.check_returncode()
+              manifest = json.loads(generation.stdout)
+              assert isinstance(manifest, dict) and set(manifest) == {'slice'}, 'Unexpected manifest schema'
+              slices = manifest['slice']
+              assert isinstance(slices, list) and len(slices) == 8, 'Expected eight slices'
+              all_files = []
+              for index, item in enumerate(slices, 1):
+                  assert isinstance(item, dict) and set(item) == {'index', 'files'}, 'Unexpected slice schema'
+                  assert type(item['index']) is int and item['index'] == index, 'Unexpected slice index'
+                  assert isinstance(item['files'], str) and item['files'], 'Empty slice'
+                  files = item['files'].split(':')
+                  for file in files:
+                      path = pathlib.PurePosixPath(file)
+                      assert file and not path.is_absolute() and '..' not in path.parts, 'Unsafe file path'
+                      assert path.parts[0] == 'tests' and path.name.startswith('test_') and path.suffix == '.py', 'Unexpected test path'
+                      assert (source / file).is_file(), 'Missing discovered file'
+                  all_files.extend(files)
+              assert len(all_files) == len(set(all_files)), 'Duplicate files across slices'
+              # Independently invoke canonical discovery: prove no missing or extra files.
+              import importlib.util
+              spec = importlib.util.spec_from_file_location('canonical_runner', source / 'scripts/run_tests_parallel.py')
+              runner = importlib.util.module_from_spec(spec)
+              sys.modules[spec.name] = runner
+              spec.loader.exec_module(runner)
+              discovered = sorted(p.relative_to(source).as_posix() for p in runner._discover_files([source / 'tests']))
+              assert sorted(all_files) == discovered, 'Slice union differs from canonical full discovery'
+              shard = int(os.environ['TEST_SHARD'])
+              assert 1 <= shard <= 8, 'Invalid shard'
+              selected = slices[shard - 1]['files']
+              receipt = dict(shard=shard, count=len(selected.split(':')), files=selected.split(':'),
+                             files_argument=selected, files_sha256=hashlib.sha256(selected.encode()).hexdigest(),
+                             manifest_sha256=hashlib.sha256(generation.stdout.encode()).hexdigest(),
+                             discovery=discovered, discovery_count=len(discovered))
+              (evidence / 'selected-slice.json').write_text(json.dumps(receipt, indent=2))
+              commands = [['bash', 'scripts/run_tests.sh', '-j', '4', '--file-timeout', '300',
+                           '--file-retries', '0', '--files', selected]]
+          results = []
+          failed = False
+          for index, command in enumerate(commands):
+              started = time.monotonic()
+              record = dict(command=command, argv_sha256=hashlib.sha256(json.dumps(command, separators=(',', ':')).encode()).hexdigest(), status='running')
+              results.append(record)
+              report = evidence / 'test-results.json'
+              report.write_text(json.dumps(results, indent=2))
+              with (evidence / f'tests-{index}.log').open('w', encoding='utf-8') as log:
+                  p = subprocess.Popen(command, cwd=source, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+                  for line in p.stdout:
+                      print(line, end='', flush=True)
+                      log.write(line)
+                      log.flush()
+                  rc = p.wait()
+              record.update(status='completed', exit_code=rc, seconds=time.monotonic() - started)
+              report.write_text(json.dumps(results, indent=2))
+              failed |= rc != 0
+          sys.exit(1 if failed else 0)
+
+      - name: Record all step outcomes even on setup failure
+        if: always()
+        shell: python {0}
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+        run: |
+          import json, os, pathlib, shutil, subprocess
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          evidence = root / 'evidence'
+          evidence.mkdir(exist_ok=True)
+          (evidence / 'job-results.json').write_text(json.dumps(dict(
+              expected_sha=os.environ['TEST_SHA'], control_sha=os.environ['GITHUB_SHA'],
+              shard=int(os.environ['TEST_SHARD']), lane=os.environ['TEST_LANE'], platform=os.environ['RUNNER_OS'],
+              steps=json.loads(os.environ['STEP_RESULTS'])), indent=2))
+          durations = root / 'source/test_durations.json'
+          if durations.exists():
+              shutil.copy2(durations, evidence / 'test_durations.json')
+          # Tracked source must remain exactly the tested revision. Ignored caches are allowed.
+          source = root / 'source'
+          if (source / '.git').exists():
+              head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
+              diff_rc = subprocess.run(['git', 'diff', '--quiet', os.environ['TEST_SHA'], '--'], cwd=source).returncode
+              status = subprocess.check_output(['git', 'status', '--short', '--untracked-files=no'], cwd=source, text=True)
+              (evidence / 'post-source-integrity.json').write_text(json.dumps(dict(head=head, expected_sha=os.environ['TEST_SHA'], tracked_diff_exit=diff_rc, status=status), indent=2))
+              if head != os.environ['TEST_SHA'] or diff_rc != 0:
+                  raise SystemExit('Tracked source changed during qualification')
+          # Do not upload runtime HOME/config; receipts and explicit logs only.
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: webhook-72027-${{ matrix.lane }}-${{ matrix.os }}-${{ matrix.sha }}-shard-${{ matrix.shard }}
+          path: |
+            evidence/*.json
+            evidence/*.log
+            evidence/*.xml
+          if-no-files-found: error
+          retention-days: 14
